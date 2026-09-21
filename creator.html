@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Setlist — Creator Booth</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="16" cy="16" r="15" stroke="var(--accent)" stroke-width="2"/>
+        <circle cx="16" cy="16" r="5" fill="var(--live)"/>
+        <circle cx="16" cy="16" r="1.6" fill="var(--surface)"/>
+      </svg>
+      <div>
+        <div class="name">Setlist</div>
+        <div class="sub">Creator booth</div>
+      </div>
+    </div>
+    <a class="nav-link" href="client.html" target="_blank" rel="noopener">Open client view ↗</a>
+  </header>
+
+  <main class="wide" id="main">
+    <div class="hero">
+      <h1>Creator booth</h1>
+      <p>Run the queue, control what's playing, and manage what clients can request.</p>
+    </div>
+
+    <div id="dbBanner"></div>
+
+    <!-- Player -->
+    <div class="card player-card">
+      <div class="player-wrap" id="playerWrap">
+        <div class="player-empty" id="playerEmpty">Nothing loaded — play something from the queue below.</div>
+      </div>
+      <div class="scrub-row">
+        <input type="range" class="scrub" id="scrub" min="0" max="100" value="0" step="1" disabled>
+      </div>
+      <div class="time-row">
+        <span id="timeCur">0:00</span>
+        <span id="timeDur">0:00</span>
+      </div>
+      <div class="player-meta">
+        <div>
+          <div class="np-t" id="npTitle">No song loaded</div>
+          <div class="np-a" id="npArtist">Queue a song to get started</div>
+        </div>
+        <button class="btn btn-primary" id="playPauseBtn" disabled>▶ Play</button>
+      </div>
+    </div>
+
+    <div class="control-bar">
+      <button class="btn btn-live" id="skipBtn" disabled>⏭ Skip current song</button>
+      <button class="btn btn-primary" id="openAddSong">+ Add song to allow list</button>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Queue</h2>
+        <span class="count-pill" id="queueCount">0 songs</span>
+      </div>
+      <div class="queue-list" id="queueList"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Suggestions from clients</h2>
+        <span class="count-pill" id="suggCount">0 pending</span>
+      </div>
+      <div id="suggList"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Allow list</h2>
+        <span class="count-pill" id="allowCount">0 approved</span>
+      </div>
+      <div id="allowList"></div>
+    </div>
+  </main>
+</div>
+
+<!-- Add to allow list modal -->
+<div class="overlay" id="addSongOverlay">
+  <div class="modal">
+    <h3>Add song to allow list</h3>
+    <p class="hint">Approved songs are what clients can request.</p>
+    <div id="addSongMsg"></div>
+    <form id="addSongForm">
+      <div class="field"><label for="asArtist">Artist</label><input id="asArtist" required maxlength="80"></div>
+      <div class="field"><label for="asTitle">Song title</label><input id="asTitle" required maxlength="100"></div>
+      <div class="field"><label for="asLink">YouTube link</label><input id="asLink" required maxlength="300" placeholder="https://youtube.com/watch?v=..."></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="addSongCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add song</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="shared.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+(function () {
+  "use strict";
+
+  var db = window.Setlist.initFirestore();
+  var banner = document.getElementById("dbBanner");
+  if (!db) {
+    banner.innerHTML = '<div class="banner bad">Firebase isn\'t configured yet — the queue and allow list won\'t sync. Fill in <code>firebase-config.js</code> and reload. See README.md.</div>';
+  }
+
+  var songsStore = db && window.Setlist.makeCollectionStore(db, "songs");
+  var queueStore = db && window.Setlist.makeCollectionStore(db, "queue");
+  var suggestionsStore = db && window.Setlist.makeCollectionStore(db, "suggestions");
+  var playback = db && window.Setlist.playbackRef(db);
+
+  var songs = [], queue = [], suggestions = [];
+  var currentTopId = null;
+  var player = null;
+  var ytApiReady = false;
+  var heartbeatTimer = null;
+  var scrubbing = false;
+
+  function el(tag, props, children) {
+    var node = document.createElement(tag);
+    if (props) Object.keys(props).forEach(function (k) {
+      if (k === "class") node.className = props[k];
+      else if (k === "html") node.innerHTML = props[k];
+      else if (k.indexOf("on") === 0 && typeof props[k] === "function") node.addEventListener(k.slice(2), props[k]);
+      else node.setAttribute(k, props[k]);
+    });
+    (children || []).forEach(function (c) { if (c != null) node.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return node;
+  }
+  function ytIconSvg() {
+    return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M21.6 7.2s-.2-1.5-.8-2.1c-.8-.8-1.7-.8-2.1-.9C15.9 4 12 4 12 4h0s-3.9 0-6.7.2c-.4 0-1.3.1-2.1.9-.6.6-.8 2.1-.8 2.1S2.2 9 2.2 10.7v1.5C2.2 14 2.4 15.8 2.4 15.8s.2 1.5.8 2.1c.8.8 1.8.8 2.3.9 1.7.2 7.5.2 7.5.2s3.9 0 6.7-.3c.4 0 1.3-.1 2.1-.9.6-.6.8-2.1.8-2.1s.2-1.7.2-3.5v-1.5c0-1.7-.2-3.5-.2-3.5z" stroke="currentColor" stroke-width="1.3"/><path d="M10 9.3l5 2.7-5 2.7V9.3z" fill="currentColor"/></svg>';
+  }
+  function sortedQueue() { return queue.slice().sort(function (a, b) { return a.requestedAt - b.requestedAt; }); }
+
+  /* ---------- queue / allow list / suggestions rendering ---------- */
+  function renderQueue() {
+    var ordered = sortedQueue();
+    document.getElementById("queueCount").textContent = ordered.length + " song" + (ordered.length === 1 ? "" : "s");
+    var container = document.getElementById("queueList");
+    container.innerHTML = "";
+    if (ordered.length === 0) {
+      container.appendChild(el("div", { class: "empty" }, [el("div", { class: "big" }, ["🎤"]), el("div", {}, ["No requests yet."])]));
+    } else {
+      ordered.forEach(function (song, i) {
+        var isNow = i === 0;
+        var row = el("div", { class: "qrow" + (isNow ? " now" : "") });
+        row.appendChild(el("div", { class: "pos" }, [isNow ? "▶" : String(i + 1)]));
+        var body = el("div", { class: "body" });
+        var t = el("div", { class: "t" }, [song.title || "Untitled"]);
+        if (isNow) t.appendChild(el("span", { class: "now-tag" }, ["NOW PLAYING"]));
+        body.appendChild(t);
+        body.appendChild(el("div", { class: "a" }, [song.artist || "Unknown artist"]));
+        row.appendChild(body);
+        if (song.youtubeLink) row.appendChild(el("a", { class: "yt-link", href: song.youtubeLink, target: "_blank", rel: "noopener", "aria-label": "Open on YouTube", html: ytIconSvg() }));
+        row.appendChild(el("button", { class: "btn btn-ghost btn-sm", onclick: function () { queueStore.remove(song.id); } }, [isNow ? "Skip" : "Remove"]));
+        container.appendChild(row);
+      });
+    }
+    updateNowPlayingUi();
+  }
+
+  function renderSuggestions() {
+    var pending = suggestions.filter(function (s) { return s.status !== "approved" && s.status !== "dismissed"; });
+    document.getElementById("suggCount").textContent = pending.length + " pending";
+    var box = document.getElementById("suggList");
+    box.innerHTML = "";
+    if (pending.length === 0) { box.appendChild(el("div", { class: "empty" }, ["No pending suggestions."])); return; }
+    pending.forEach(function (s) {
+      var row = el("div", { class: "sugg-row" }, [
+        el("div", { class: "body" }, [el("div", { class: "t" }, [s.title]), el("div", { class: "a" }, [s.artist + (s.note ? " · " + s.note : "")])])
+      ]);
+      var actions = el("div", { class: "sugg-actions" });
+      actions.appendChild(el("button", { class: "btn btn-primary btn-sm", onclick: function () {
+        songsStore.add({ artist: s.artist, title: s.title, youtubeLink: s.youtubeLink || "", addedAt: Date.now() });
+        suggestionsStore.remove(s.id);
+      } }, ["Approve"]));
+      actions.appendChild(el("button", { class: "btn btn-ghost btn-sm", onclick: function () { suggestionsStore.remove(s.id); } }, ["Dismiss"]));
+      row.appendChild(actions);
+      box.appendChild(row);
+    });
+  }
+
+  function renderAllowList() {
+    document.getElementById("allowCount").textContent = songs.length + " approved";
+    var box = document.getElementById("allowList");
+    box.innerHTML = "";
+    if (songs.length === 0) { box.appendChild(el("div", { class: "empty" }, ["No approved songs yet. Add one above."])); return; }
+    songs.slice().sort(function (a, b) { return (a.artist || "").localeCompare(b.artist || ""); }).forEach(function (s) {
+      var row = el("div", { class: "allow-row" }, [el("div", {}, [el("div", { class: "t" }, [s.title]), el("div", { class: "a" }, [s.artist])])]);
+      row.appendChild(el("button", { class: "btn btn-danger btn-sm", onclick: function () { songsStore.remove(s.id); } }, ["Remove"]));
+      box.appendChild(row);
+    });
+  }
+
+  /* ---------- player ---------- */
+  window.onYouTubeIframeAPIReady = function () { ytApiReady = true; maybeCreatePlayer(); };
+
+  function maybeCreatePlayer() {
+    if (player || !ytApiReady) return;
+    var top = sortedQueue()[0];
+    var videoId = top ? window.Setlist.extractYoutubeId(top.youtubeLink) : "";
+    if (!videoId) return; // wait until there's something to load
+    document.getElementById("playerEmpty").remove();
+    var holder = el("div", { id: "ytPlayer" });
+    document.getElementById("playerWrap").appendChild(holder);
+    player = new YT.Player("ytPlayer", {
+      videoId: videoId,
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
+      events: {
+        onReady: function () {
+          currentTopId = top.id;
+          document.getElementById("playPauseBtn").disabled = false;
+          document.getElementById("scrub").disabled = false;
+          startTimeUpdater();
+        },
+        onStateChange: onPlayerStateChange
+      }
+    });
+  }
+
+  function onPlayerStateChange(e) {
+    var state = e.data;
+    var btn = document.getElementById("playPauseBtn");
+    if (state === YT.PlayerState.PLAYING) {
+      btn.textContent = "⏸ Pause";
+      writePlayback(true);
+      startHeartbeat();
+    } else if (state === YT.PlayerState.PAUSED) {
+      btn.textContent = "▶ Play";
+      writePlayback(false);
+      stopHeartbeat();
+    } else if (state === YT.PlayerState.ENDED) {
+      stopHeartbeat();
+      // song finished on its own — skip to the next one in queue
+      var top = sortedQueue()[0];
+      if (top) queueStore.remove(top.id);
+    }
+  }
+
+  function writePlayback(isPlaying) {
+    if (!playback || !player) return;
+    var top = sortedQueue()[0];
+    playback.set({
+      videoId: top ? window.Setlist.extractYoutubeId(top.youtubeLink) : "",
+      queueId: top ? top.id : null,
+      isPlaying: isPlaying,
+      positionSec: safeGetTime(),
+      updatedAtMs: Date.now()
+    }).catch(function (err) { console.error("[Setlist] playback write failed", err); });
+  }
+
+  function safeGetTime() { try { return player && player.getCurrentTime ? player.getCurrentTime() : 0; } catch (e) { return 0; } }
+  function safeGetDuration() { try { return player && player.getDuration ? player.getDuration() : 0; } catch (e) { return 0; } }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    // Re-broadcast position every 5s so the client dashboard can correct drift.
+    heartbeatTimer = setInterval(function () { writePlayback(true); }, 5000);
+  }
+  function stopHeartbeat() { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; } }
+
+  function startTimeUpdater() {
+    setInterval(function () {
+      if (!player || scrubbing) return;
+      var cur = safeGetTime(), dur = safeGetDuration();
+      document.getElementById("timeCur").textContent = window.Setlist.fmtTime(cur);
+      document.getElementById("timeDur").textContent = window.Setlist.fmtTime(dur);
+      var scrub = document.getElementById("scrub");
+      if (dur > 0) { scrub.max = String(Math.floor(dur)); scrub.value = String(Math.floor(cur)); }
+    }, 500);
+  }
+
+  function updateNowPlayingUi() {
+    var top = sortedQueue()[0];
+    document.getElementById("skipBtn").disabled = !top;
+    document.getElementById("npTitle").textContent = top ? top.title : "No song loaded";
+    document.getElementById("npArtist").textContent = top ? top.artist : "Queue a song to get started";
+
+    if (!top) {
+      currentTopId = null;
+      if (player) { try { player.stopVideo(); } catch (e) {} }
+      if (playback) playback.set({ videoId: "", queueId: null, isPlaying: false, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
+      return;
+    }
+    if (top.id === currentTopId) return; // nothing changed
+
+    var videoId = window.Setlist.extractYoutubeId(top.youtubeLink);
+    currentTopId = top.id;
+    if (!player) { maybeCreatePlayer(); return; }
+    if (!videoId) return;
+    player.cueVideoById(videoId, 0);
+    document.getElementById("playPauseBtn").textContent = "▶ Play";
+    if (playback) playback.set({ videoId: videoId, queueId: top.id, isPlaying: false, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
+  }
+
+  document.getElementById("playPauseBtn").addEventListener("click", function () {
+    if (!player) return;
+    var state = player.getPlayerState();
+    if (state === YT.PlayerState.PLAYING) player.pauseVideo(); else player.playVideo();
+  });
+  document.getElementById("skipBtn").addEventListener("click", function () {
+    var top = sortedQueue()[0];
+    if (top) queueStore.remove(top.id);
+  });
+
+  var scrub = document.getElementById("scrub");
+  scrub.addEventListener("input", function () {
+    scrubbing = true;
+    document.getElementById("timeCur").textContent = window.Setlist.fmtTime(scrub.value);
+  });
+  scrub.addEventListener("change", function () {
+    if (player) player.seekTo(Number(scrub.value), true);
+    scrubbing = false;
+    writePlayback(player && player.getPlayerState() === YT.PlayerState.PLAYING);
+  });
+
+  /* ---------- add song modal ---------- */
+  document.getElementById("openAddSong").addEventListener("click", function () {
+    document.getElementById("addSongOverlay").classList.add("open");
+    document.getElementById("asArtist").value = "";
+    document.getElementById("asTitle").value = "";
+    document.getElementById("asLink").value = "";
+    document.getElementById("addSongMsg").innerHTML = "";
+    setTimeout(function () { document.getElementById("asArtist").focus(); }, 30);
+  });
+  document.getElementById("addSongCancel").addEventListener("click", function () { document.getElementById("addSongOverlay").classList.remove("open"); });
+  document.getElementById("addSongOverlay").addEventListener("click", function (e) { if (e.target === this) this.classList.remove("open"); });
+  document.getElementById("addSongForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var artist = document.getElementById("asArtist").value.trim();
+    var title = document.getElementById("asTitle").value.trim();
+    var link = document.getElementById("asLink").value.trim();
+    if (!artist || !title || !link) return;
+    if (!window.Setlist.extractYoutubeId(link)) {
+      document.getElementById("addSongMsg").innerHTML = '<div class="form-msg err">That doesn\'t look like a YouTube link.</div>';
+      return;
+    }
+    if (!songsStore) return;
+    songsStore.add({ artist: artist, title: title, youtubeLink: link, addedAt: Date.now() });
+    document.getElementById("addSongMsg").innerHTML = '<div class="form-msg ok">Added to the allow list.</div>';
+    setTimeout(function () { document.getElementById("addSongOverlay").classList.remove("open"); }, 700);
+  });
+
+  /* ---------- boot ---------- */
+  if (songsStore) songsStore.subscribe(function (arr) { songs = arr; renderAllowList(); }, "addedAt");
+  if (queueStore) queueStore.subscribe(function (arr) { queue = arr; renderQueue(); }, "requestedAt");
+  if (suggestionsStore) suggestionsStore.subscribe(function (arr) { suggestions = arr; renderSuggestions(); }, "submittedAt");
+})();
+</script>
+</body>
+</html>

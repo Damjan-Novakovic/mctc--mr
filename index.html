@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Setlist</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  .landing { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 60px 20px; gap: 22px; }
+  .landing h1 { font-size: 2rem; margin: 0; }
+  .landing p { color: var(--ink-dim); max-width: 42ch; margin: 0; }
+  .landing .links { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <main>
+    <div class="landing">
+      <svg width="52" height="52" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="16" cy="16" r="15" stroke="var(--accent)" stroke-width="2"/>
+        <circle cx="16" cy="16" r="5" fill="var(--live)"/>
+        <circle cx="16" cy="16" r="1.6" fill="var(--surface)"/>
+      </svg>
+      <h1>Setlist</h1>
+      <p>A live song request queue with a synced YouTube player for the room and the booth.</p>
+      <div class="links">
+        <a class="btn btn-primary" href="client.html">Request a song</a>
+        <a class="btn btn-ghost" href="creator.html">Creator booth</a>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
