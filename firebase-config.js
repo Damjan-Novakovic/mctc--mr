@@ -6,8 +6,6 @@
    is handled by your Firestore security rules, not by hiding this file.
    See README.md for full setup steps. */
 
-/*
-old /filled in
 window.FIREBASE_CONFIG = {
   apiKey: "AIzaSyDZAAprU8UjnfJtdU3ruJIpQZpL4Nja6CQ",
   authDomain: "mctc--mr.firebaseapp.com",
@@ -16,7 +14,7 @@ window.FIREBASE_CONFIG = {
   messagingSenderId: "1034371855744",
   appId: "1:1034371855744:web:fa75822dbaccf796b2bd65"
 };
-*/
+/*
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
   apiKey: "AIzaSyDZAAprU8UjnfJtdU3ruJIpQZpL4Nja6CQ",
@@ -27,3 +25,4 @@ const firebaseConfig = {
   appId: "1:1034371855744:web:fa75822dbaccf796b2bd65",
   measurementId: "G-Y3L17L3MCV"
 };
+*/
