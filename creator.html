@@ -50,6 +50,7 @@
         <div>
           <div class="np-t" id="npTitle">No song loaded</div>
           <div class="np-a" id="npArtist">Queue a song to get started</div>
+          <div class="np-a" id="npPrev" style="margin-top:4px;"></div>
         </div>
         <button class="btn btn-primary" id="playPauseBtn" disabled>▶ Play</button>
       </div>
@@ -74,6 +75,14 @@
         <span class="count-pill" id="suggCount">0 pending</span>
       </div>
       <div id="suggList"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Recently played</h2>
+        <span class="count-pill" id="historyCount">0 played</span>
+      </div>
+      <div class="queue-list" id="historyList"></div>
     </div>
 
     <div class="card">
@@ -122,10 +131,13 @@
   var songsStore = db && window.Setlist.makeCollectionStore(db, "songs");
   var queueStore = db && window.Setlist.makeCollectionStore(db, "queue");
   var suggestionsStore = db && window.Setlist.makeCollectionStore(db, "suggestions");
+  var historyStore = db && window.Setlist.makeCollectionStore(db, "history");
   var playback = db && window.Setlist.playbackRef(db);
 
-  var songs = [], queue = [], suggestions = [];
+  var songs = [], queue = [], suggestions = [], history = [];
   var currentTopId = null;
+  var currentSongSnapshot = null;  // full info of whatever is current, kept around so we
+  var previousSongSnapshot = null; // still have it once it's removed from the queue
   var player = null;
   var ytApiReady = false;
   var heartbeatTimer = null;
@@ -147,7 +159,7 @@
   }
   function sortedQueue() { return queue.slice().sort(function (a, b) { return a.requestedAt - b.requestedAt; }); }
 
-  /* ---------- queue / allow list / suggestions rendering ---------- */
+  /* ---------- queue / allow list / suggestions / history rendering ---------- */
   function renderQueue() {
     var ordered = sortedQueue();
     document.getElementById("queueCount").textContent = ordered.length + " song" + (ordered.length === 1 ? "" : "s");
@@ -207,6 +219,21 @@
     });
   }
 
+  function renderHistory() {
+    var ordered = history.slice().sort(function (a, b) { return (b.endedAt || 0) - (a.endedAt || 0); }).slice(0, 10);
+    document.getElementById("historyCount").textContent = history.length + " played";
+    var box = document.getElementById("historyList");
+    box.innerHTML = "";
+    if (ordered.length === 0) { box.appendChild(el("div", { class: "empty" }, ["Nothing's been played yet."])); return; }
+    ordered.forEach(function (song) {
+      var row = el("div", { class: "qrow" }, [el("div", { class: "pos" }, ["✓"])]);
+      var body = el("div", { class: "body" }, [el("div", { class: "t" }, [song.title || "Untitled"]), el("div", { class: "a" }, [song.artist || "Unknown artist"])]);
+      row.appendChild(body);
+      if (song.youtubeLink) row.appendChild(el("a", { class: "yt-link", href: song.youtubeLink, target: "_blank", rel: "noopener", "aria-label": "Open on YouTube", html: ytIconSvg() }));
+      box.appendChild(row);
+    });
+  }
+
   /* ---------- player ---------- */
   window.onYouTubeIframeAPIReady = function () { ytApiReady = true; maybeCreatePlayer(); };
 
@@ -253,16 +280,32 @@
     }
   }
 
+  function previousPayload() {
+    return previousSongSnapshot ? {
+      artist: previousSongSnapshot.artist, title: previousSongSnapshot.title, youtubeLink: previousSongSnapshot.youtubeLink
+    } : null;
+  }
+
   function writePlayback(isPlaying) {
     if (!playback || !player) return;
     var top = sortedQueue()[0];
     playback.set({
       videoId: top ? window.Setlist.extractYoutubeId(top.youtubeLink) : "",
+      artist: top ? top.artist : "",
+      title: top ? top.title : "",
+      youtubeLink: top ? top.youtubeLink : "",
       queueId: top ? top.id : null,
       isPlaying: isPlaying,
       positionSec: safeGetTime(),
-      updatedAtMs: Date.now()
+      updatedAtMs: Date.now(),
+      previous: previousPayload()
     }).catch(function (err) { console.error("[Setlist] playback write failed", err); });
+  }
+
+  // Record a song as played once it's no longer current, while we still have its details.
+  function logHistory(song) {
+    if (!historyStore || !song) return;
+    historyStore.add({ artist: song.artist, title: song.title, youtubeLink: song.youtubeLink, endedAt: Date.now() });
   }
 
   function safeGetTime() { try { return player && player.getCurrentTime ? player.getCurrentTime() : 0; } catch (e) { return 0; } }
@@ -293,12 +336,21 @@
     document.getElementById("npArtist").textContent = top ? top.artist : "Queue a song to get started";
 
     if (!top) {
+      if (currentTopId !== null) { // we just ran out of queue — retire the current song
+        if (currentSongSnapshot) { previousSongSnapshot = currentSongSnapshot; logHistory(currentSongSnapshot); }
+        currentSongSnapshot = null;
+        document.getElementById("npPrev").textContent = previousSongSnapshot ? "Previously played: " + previousSongSnapshot.title : "";
+        if (playback) playback.set({ videoId: "", artist: "", title: "", youtubeLink: "", queueId: null, isPlaying: false, positionSec: 0, updatedAtMs: Date.now(), previous: previousPayload() }).catch(function () {});
+      }
       currentTopId = null;
       if (player) { try { player.stopVideo(); } catch (e) {} }
-      if (playback) playback.set({ videoId: "", queueId: null, isPlaying: false, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
       return;
     }
     if (top.id === currentTopId) return; // nothing changed
+
+    if (currentSongSnapshot) { previousSongSnapshot = currentSongSnapshot; logHistory(currentSongSnapshot); }
+    currentSongSnapshot = { id: top.id, artist: top.artist, title: top.title, youtubeLink: top.youtubeLink };
+    document.getElementById("npPrev").textContent = previousSongSnapshot ? "Previously played: " + previousSongSnapshot.title : "";
 
     var videoId = window.Setlist.extractYoutubeId(top.youtubeLink);
     currentTopId = top.id;
@@ -306,7 +358,10 @@
     if (!videoId) return;
     player.loadVideoById(videoId, 0);
     document.getElementById("playPauseBtn").textContent = "⏸ Pause";
-    if (playback) playback.set({ videoId: videoId, queueId: top.id, isPlaying: true, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
+    if (playback) playback.set({
+      videoId: videoId, artist: top.artist, title: top.title, youtubeLink: top.youtubeLink,
+      queueId: top.id, isPlaying: true, positionSec: 0, updatedAtMs: Date.now(), previous: previousPayload()
+    }).catch(function () {});
   }
 
   document.getElementById("playPauseBtn").addEventListener("click", function () {
@@ -361,6 +416,7 @@
   if (songsStore) songsStore.subscribe(function (arr) { songs = arr; renderAllowList(); }, "addedAt");
   if (queueStore) queueStore.subscribe(function (arr) { queue = arr; renderQueue(); }, "requestedAt");
   if (suggestionsStore) suggestionsStore.subscribe(function (arr) { suggestions = arr; renderSuggestions(); }, "submittedAt");
+  if (historyStore) historyStore.subscribe(function (arr) { history = arr; renderHistory(); }, "endedAt", "desc");
 })();
 </script>
 </body>

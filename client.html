@@ -43,6 +43,7 @@
         <div>
           <div class="np-t" id="npTitle">Nothing playing yet</div>
           <div class="np-a" id="npArtist">Requests will show up here once the creator hits play</div>
+          <div class="np-a" id="npPrev" style="margin-top:4px;"></div>
         </div>
       </div>
     </div>
@@ -81,7 +82,7 @@
     <form id="suggestForm">
       <div class="field"><label for="sgArtist">Artist</label><input id="sgArtist" required maxlength="80"></div>
       <div class="field"><label for="sgTitle">Song title</label><input id="sgTitle" required maxlength="100"></div>
-      <div class="field"><label for="sgLink">YouTube link (mandatory)</label><input id="sgLink" maxlength="300" placeholder="https://youtube.com/..."></div>
+      <div class="field"><label for="sgLink">YouTube link</label><input id="sgLink" required maxlength="300" placeholder="https://youtube.com/watch?v=..."></div>
       <div class="field"><label for="sgNote">Note (optional)</label><textarea id="sgNote" maxlength="200" placeholder="Anything the creator should know"></textarea></div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="suggestCancel">Cancel</button>
@@ -233,6 +234,10 @@
     var link = document.getElementById("sgLink").value.trim();
     var note = document.getElementById("sgNote").value.trim();
     if (!artist || !title || !suggestionsStore) return;
+    if (!window.Setlist.extractYoutubeId(link)) {
+      document.getElementById("suggestMsg").innerHTML = '<div class="form-msg err">That doesn\'t look like a YouTube link.</div>';
+      return;
+    }
     suggestionsStore.add({ artist: artist, title: title, youtubeLink: link, note: note, submittedAt: Date.now(), status: "pending" });
     document.getElementById("suggestMsg").innerHTML = '<div class="form-msg ok">Sent! The creator will review it.</div>';
     setTimeout(function () { document.getElementById("suggestOverlay").classList.remove("open"); }, 900);
@@ -319,6 +324,7 @@
     playbackDoc.onSnapshot(function (snap) {
       var data = snap.exists ? snap.data() : null;
       lastState = data;
+      document.getElementById("npPrev").textContent = (data && data.previous) ? "Previously played: " + data.previous.title : "";
       if (!player) { maybeCreatePlayer(); return; }
       applyState(data, true);
     }, function (err) { console.error("[Setlist] playback listener error", err); });
