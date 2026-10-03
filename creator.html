@@ -159,7 +159,7 @@
   }
   function sortedQueue() { return queue.slice().sort(function (a, b) { return a.requestedAt - b.requestedAt; }); }
 
-  /* ---------- queue / allow list / suggestions rendering ---------- */
+  /* ---------- queue / allow list / suggestions / history rendering ---------- */
   function renderQueue() {
     var ordered = sortedQueue();
     document.getElementById("queueCount").textContent = ordered.length + " song" + (ordered.length === 1 ? "" : "s");
@@ -219,6 +219,21 @@
     });
   }
 
+  function renderHistory() {
+    var ordered = history.slice().sort(function (a, b) { return (b.endedAt || 0) - (a.endedAt || 0); }).slice(0, 10);
+    document.getElementById("historyCount").textContent = history.length + " played";
+    var box = document.getElementById("historyList");
+    box.innerHTML = "";
+    if (ordered.length === 0) { box.appendChild(el("div", { class: "empty" }, ["Nothing's been played yet."])); return; }
+    ordered.forEach(function (song) {
+      var row = el("div", { class: "qrow" }, [el("div", { class: "pos" }, ["✓"])]);
+      var body = el("div", { class: "body" }, [el("div", { class: "t" }, [song.title || "Untitled"]), el("div", { class: "a" }, [song.artist || "Unknown artist"])]);
+      row.appendChild(body);
+      if (song.youtubeLink) row.appendChild(el("a", { class: "yt-link", href: song.youtubeLink, target: "_blank", rel: "noopener", "aria-label": "Open on YouTube", html: ytIconSvg() }));
+      box.appendChild(row);
+    });
+  }
+
   /* ---------- player ---------- */
   window.onYouTubeIframeAPIReady = function () { ytApiReady = true; maybeCreatePlayer(); };
 
@@ -232,13 +247,14 @@
     document.getElementById("playerWrap").appendChild(holder);
     player = new YT.Player("ytPlayer", {
       videoId: videoId,
-      playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1, autoplay: 1 },
       events: {
-        onReady: function () {
+        onReady: function (e) {
           currentTopId = top.id;
           document.getElementById("playPauseBtn").disabled = false;
           document.getElementById("scrub").disabled = false;
           startTimeUpdater();
+          e.target.playVideo();
         },
         onStateChange: onPlayerStateChange
       }
@@ -340,27 +356,12 @@
     currentTopId = top.id;
     if (!player) { maybeCreatePlayer(); return; }
     if (!videoId) return;
-    player.cueVideoById(videoId, 0);
-    document.getElementById("playPauseBtn").textContent = "▶ Play";
+    player.loadVideoById(videoId, 0);
+    document.getElementById("playPauseBtn").textContent = "⏸ Pause";
     if (playback) playback.set({
       videoId: videoId, artist: top.artist, title: top.title, youtubeLink: top.youtubeLink,
-      queueId: top.id, isPlaying: false, positionSec: 0, updatedAtMs: Date.now(), previous: previousPayload()
+      queueId: top.id, isPlaying: true, positionSec: 0, updatedAtMs: Date.now(), previous: previousPayload()
     }).catch(function () {});
-  }
-
-  function renderHistory() {
-    var ordered = history.slice().sort(function (a, b) { return (b.endedAt || 0) - (a.endedAt || 0); }).slice(0, 10);
-    document.getElementById("historyCount").textContent = history.length + " played";
-    var box = document.getElementById("historyList");
-    box.innerHTML = "";
-    if (ordered.length === 0) { box.appendChild(el("div", { class: "empty" }, ["Nothing's been played yet."])); return; }
-    ordered.forEach(function (song) {
-      var row = el("div", { class: "qrow" }, [el("div", { class: "pos" }, ["✓"])]);
-      var body = el("div", { class: "body" }, [el("div", { class: "t" }, [song.title || "Untitled"]), el("div", { class: "a" }, [song.artist || "Unknown artist"])]);
-      row.appendChild(body);
-      if (song.youtubeLink) row.appendChild(el("a", { class: "yt-link", href: song.youtubeLink, target: "_blank", rel: "noopener", "aria-label": "Open on YouTube", html: ytIconSvg() }));
-      box.appendChild(row);
-    });
   }
 
   document.getElementById("playPauseBtn").addEventListener("click", function () {
