@@ -220,13 +220,14 @@
     document.getElementById("playerWrap").appendChild(holder);
     player = new YT.Player("ytPlayer", {
       videoId: videoId,
-      playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1, autoplay: 1 },
       events: {
-        onReady: function () {
+        onReady: function (e) {
           currentTopId = top.id;
           document.getElementById("playPauseBtn").disabled = false;
           document.getElementById("scrub").disabled = false;
           startTimeUpdater();
+          e.target.playVideo();
         },
         onStateChange: onPlayerStateChange
       }
@@ -303,9 +304,9 @@
     currentTopId = top.id;
     if (!player) { maybeCreatePlayer(); return; }
     if (!videoId) return;
-    player.cueVideoById(videoId, 0);
-    document.getElementById("playPauseBtn").textContent = "▶ Play";
-    if (playback) playback.set({ videoId: videoId, queueId: top.id, isPlaying: false, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
+    player.loadVideoById(videoId, 0);
+    document.getElementById("playPauseBtn").textContent = "⏸ Pause";
+    if (playback) playback.set({ videoId: videoId, queueId: top.id, isPlaying: true, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
   }
 
   document.getElementById("playPauseBtn").addEventListener("click", function () {
