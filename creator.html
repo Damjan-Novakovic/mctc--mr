@@ -50,6 +50,7 @@
         <div>
           <div class="np-t" id="npTitle">No song loaded</div>
           <div class="np-a" id="npArtist">Queue a song to get started</div>
+          <div class="np-a" id="npPrev" style="margin-top:4px;"></div>
         </div>
         <button class="btn btn-primary" id="playPauseBtn" disabled>▶ Play</button>
       </div>
@@ -58,6 +59,7 @@
     <div class="control-bar">
       <button class="btn btn-live" id="skipBtn" disabled>⏭ Skip current song</button>
       <button class="btn btn-primary" id="openAddSong">+ Add song to allow list</button>
+      <button class="btn btn-ghost" id="openImportPlaylist">📋 Import playlist</button>
     </div>
 
     <div class="card">
@@ -74,6 +76,14 @@
         <span class="count-pill" id="suggCount">0 pending</span>
       </div>
       <div id="suggList"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Recently played</h2>
+        <span class="count-pill" id="historyCount">0 played</span>
+      </div>
+      <div class="queue-list" id="historyList"></div>
     </div>
 
     <div class="card">
@@ -104,9 +114,46 @@
   </div>
 </div>
 
+<!-- Import playlist modal -->
+<div class="overlay" id="importOverlay">
+  <div class="modal" style="max-width:520px;">
+    <h3>Import a YouTube playlist</h3>
+    <p class="hint">Pulls every video from a public playlist into your allow list.</p>
+    <div id="importMsg"></div>
+
+    <div id="importStep1">
+      <div class="field">
+        <label for="importUrl">Playlist link or ID</label>
+        <input id="importUrl" placeholder="https://www.youtube.com/playlist?list=...">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="importCancel1">Cancel</button>
+        <button type="button" class="btn btn-primary" id="importFetchBtn">Fetch playlist</button>
+      </div>
+    </div>
+
+    <div id="importStep2" style="display:none;">
+      <div class="section-title" style="margin-bottom:8px;">
+        <span class="count-pill" id="importCount">0 found</span>
+        <div style="display:flex; gap:10px;">
+          <button type="button" class="link-btn" id="importSelectAll">Select all</button>
+          <button type="button" class="link-btn" id="importSelectNone">Select none</button>
+        </div>
+      </div>
+      <div id="importList" class="import-list"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="importBack">&larr; Back</button>
+        <button type="button" class="btn btn-ghost" id="importCancel2">Cancel</button>
+        <button type="button" class="btn btn-primary" id="importConfirmBtn">Import selected</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
+<script src="youtube-config.js"></script>
 <script src="shared.js"></script>
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
@@ -122,10 +169,13 @@
   var songsStore = db && window.Setlist.makeCollectionStore(db, "songs");
   var queueStore = db && window.Setlist.makeCollectionStore(db, "queue");
   var suggestionsStore = db && window.Setlist.makeCollectionStore(db, "suggestions");
+  var historyStore = db && window.Setlist.makeCollectionStore(db, "history");
   var playback = db && window.Setlist.playbackRef(db);
 
-  var songs = [], queue = [], suggestions = [];
+  var songs = [], queue = [], suggestions = [], history = [];
   var currentTopId = null;
+  var currentSongSnapshot = null;  // full info of whatever is current, kept around so we
+  var previousSongSnapshot = null; // still have it once it's removed from the queue
   var player = null;
   var ytApiReady = false;
   var heartbeatTimer = null;
@@ -147,7 +197,7 @@
   }
   function sortedQueue() { return queue.slice().sort(function (a, b) { return a.requestedAt - b.requestedAt; }); }
 
-  /* ---------- queue / allow list / suggestions rendering ---------- */
+  /* ---------- queue / allow list / suggestions / history rendering ---------- */
   function renderQueue() {
     var ordered = sortedQueue();
     document.getElementById("queueCount").textContent = ordered.length + " song" + (ordered.length === 1 ? "" : "s");
@@ -207,6 +257,21 @@
     });
   }
 
+  function renderHistory() {
+    var ordered = history.slice().sort(function (a, b) { return (b.endedAt || 0) - (a.endedAt || 0); }).slice(0, 10);
+    document.getElementById("historyCount").textContent = history.length + " played";
+    var box = document.getElementById("historyList");
+    box.innerHTML = "";
+    if (ordered.length === 0) { box.appendChild(el("div", { class: "empty" }, ["Nothing's been played yet."])); return; }
+    ordered.forEach(function (song) {
+      var row = el("div", { class: "qrow" }, [el("div", { class: "pos" }, ["✓"])]);
+      var body = el("div", { class: "body" }, [el("div", { class: "t" }, [song.title || "Untitled"]), el("div", { class: "a" }, [song.artist || "Unknown artist"])]);
+      row.appendChild(body);
+      if (song.youtubeLink) row.appendChild(el("a", { class: "yt-link", href: song.youtubeLink, target: "_blank", rel: "noopener", "aria-label": "Open on YouTube", html: ytIconSvg() }));
+      box.appendChild(row);
+    });
+  }
+
   /* ---------- player ---------- */
   window.onYouTubeIframeAPIReady = function () { ytApiReady = true; maybeCreatePlayer(); };
 
@@ -253,16 +318,32 @@
     }
   }
 
+  function previousPayload() {
+    return previousSongSnapshot ? {
+      artist: previousSongSnapshot.artist, title: previousSongSnapshot.title, youtubeLink: previousSongSnapshot.youtubeLink
+    } : null;
+  }
+
   function writePlayback(isPlaying) {
     if (!playback || !player) return;
     var top = sortedQueue()[0];
     playback.set({
       videoId: top ? window.Setlist.extractYoutubeId(top.youtubeLink) : "",
+      artist: top ? top.artist : "",
+      title: top ? top.title : "",
+      youtubeLink: top ? top.youtubeLink : "",
       queueId: top ? top.id : null,
       isPlaying: isPlaying,
       positionSec: safeGetTime(),
-      updatedAtMs: Date.now()
+      updatedAtMs: Date.now(),
+      previous: previousPayload()
     }).catch(function (err) { console.error("[Setlist] playback write failed", err); });
+  }
+
+  // Record a song as played once it's no longer current, while we still have its details.
+  function logHistory(song) {
+    if (!historyStore || !song) return;
+    historyStore.add({ artist: song.artist, title: song.title, youtubeLink: song.youtubeLink, endedAt: Date.now() });
   }
 
   function safeGetTime() { try { return player && player.getCurrentTime ? player.getCurrentTime() : 0; } catch (e) { return 0; } }
@@ -293,12 +374,21 @@
     document.getElementById("npArtist").textContent = top ? top.artist : "Queue a song to get started";
 
     if (!top) {
+      if (currentTopId !== null) { // we just ran out of queue — retire the current song
+        if (currentSongSnapshot) { previousSongSnapshot = currentSongSnapshot; logHistory(currentSongSnapshot); }
+        currentSongSnapshot = null;
+        document.getElementById("npPrev").textContent = previousSongSnapshot ? "Previously played: " + previousSongSnapshot.title : "";
+        if (playback) playback.set({ videoId: "", artist: "", title: "", youtubeLink: "", queueId: null, isPlaying: false, positionSec: 0, updatedAtMs: Date.now(), previous: previousPayload() }).catch(function () {});
+      }
       currentTopId = null;
       if (player) { try { player.stopVideo(); } catch (e) {} }
-      if (playback) playback.set({ videoId: "", queueId: null, isPlaying: false, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
       return;
     }
     if (top.id === currentTopId) return; // nothing changed
+
+    if (currentSongSnapshot) { previousSongSnapshot = currentSongSnapshot; logHistory(currentSongSnapshot); }
+    currentSongSnapshot = { id: top.id, artist: top.artist, title: top.title, youtubeLink: top.youtubeLink };
+    document.getElementById("npPrev").textContent = previousSongSnapshot ? "Previously played: " + previousSongSnapshot.title : "";
 
     var videoId = window.Setlist.extractYoutubeId(top.youtubeLink);
     currentTopId = top.id;
@@ -306,7 +396,10 @@
     if (!videoId) return;
     player.loadVideoById(videoId, 0);
     document.getElementById("playPauseBtn").textContent = "⏸ Pause";
-    if (playback) playback.set({ videoId: videoId, queueId: top.id, isPlaying: true, positionSec: 0, updatedAtMs: Date.now() }).catch(function () {});
+    if (playback) playback.set({
+      videoId: videoId, artist: top.artist, title: top.title, youtubeLink: top.youtubeLink,
+      queueId: top.id, isPlaying: true, positionSec: 0, updatedAtMs: Date.now(), previous: previousPayload()
+    }).catch(function () {});
   }
 
   document.getElementById("playPauseBtn").addEventListener("click", function () {
@@ -357,10 +450,171 @@
     setTimeout(function () { document.getElementById("addSongOverlay").classList.remove("open"); }, 700);
   });
 
+  /* ---------- playlist import ---------- */
+  function extractPlaylistId(input) {
+    if (!input) return "";
+    var trimmed = input.trim();
+    var m = trimmed.match(/[?&]list=([A-Za-z0-9_-]+)/);
+    if (m) return m[1];
+    if (/^[A-Za-z0-9_-]{10,}$/.test(trimmed)) return trimmed; // already looks like a bare playlist id
+    return "";
+  }
+
+  function escapeAttr(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Strips common "(Official Video)"-style annotations so the cleaned
+  // text is more likely to just be "Artist - Title".
+  function cleanRawTitle(raw) {
+    return (raw || "")
+      .replace(/[\(\[][^\)\]]*(official|lyric|audio|video|visualizer|remaster|hd|hq|4k)[^\)\]]*[\)\]]/ig, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+  function splitArtistTitle(raw, channelTitle) {
+    var cleaned = cleanRawTitle(raw);
+    var m = cleaned.match(/^(.+?)\s[-–—]\s(.+)$/);
+    if (m) return { artist: m[1].trim(), title: m[2].trim() };
+    var ch = (channelTitle || "").replace(/\s*-\s*Topic$/i, "").trim();
+    return { artist: ch, title: cleaned || raw || "Untitled" };
+  }
+
+  function fetchPlaylistItems(playlistId, apiKey) {
+    var items = [];
+    function page(pageToken) {
+      var url = "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=" +
+        encodeURIComponent(playlistId) + "&key=" + encodeURIComponent(apiKey) + (pageToken ? "&pageToken=" + pageToken : "");
+      return fetch(url).then(function (res) {
+        if (!res.ok) {
+          return res.json().catch(function () { return {}; }).then(function (errJson) {
+            throw new Error((errJson.error && errJson.error.message) || ("YouTube API error " + res.status));
+          });
+        }
+        return res.json();
+      }).then(function (data) {
+        (data.items || []).forEach(function (it) {
+          var sn = it.snippet || {};
+          var videoId = sn.resourceId && sn.resourceId.videoId;
+          if (!videoId || sn.title === "Deleted video" || sn.title === "Private video") return;
+          items.push({ videoId: videoId, rawTitle: sn.title || "", channelTitle: sn.videoOwnerChannelTitle || sn.channelTitle || "" });
+        });
+        if (data.nextPageToken) return page(data.nextPageToken);
+      });
+    }
+    return page().then(function () { return items; });
+  }
+
+  function renderImportPreview(items) {
+    var box = document.getElementById("importList");
+    box.innerHTML = "";
+    items.forEach(function (it) {
+      var parsed = splitArtistTitle(it.rawTitle, it.channelTitle);
+      var youtubeLink = "https://www.youtube.com/watch?v=" + it.videoId;
+      var isDup = songs.some(function (s) { return window.Setlist.extractYoutubeId(s.youtubeLink) === it.videoId; });
+      var row = document.createElement("div");
+      row.className = "import-row";
+      row.setAttribute("data-link", youtubeLink);
+      row.innerHTML =
+        '<label class="import-check"><input type="checkbox" class="imp-sel"' + (isDup ? "" : " checked") + '></label>' +
+        '<div class="import-fields">' +
+          '<input type="text" class="imp-artist" value="' + escapeAttr(parsed.artist) + '" placeholder="Artist">' +
+          '<input type="text" class="imp-title" value="' + escapeAttr(parsed.title) + '" placeholder="Song title">' +
+        '</div>' +
+        (isDup ? '<span class="dup-badge">Already added</span>' : '');
+      box.appendChild(row);
+    });
+    document.getElementById("importCount").textContent = items.length + " found";
+  }
+
+  function openImportModal() {
+    document.getElementById("importOverlay").classList.add("open");
+    document.getElementById("importUrl").value = "";
+    document.getElementById("importMsg").innerHTML = "";
+    document.getElementById("importList").innerHTML = "";
+    document.getElementById("importStep1").style.display = "block";
+    document.getElementById("importStep2").style.display = "none";
+    document.getElementById("importConfirmBtn").disabled = false;
+    setTimeout(function () { document.getElementById("importUrl").focus(); }, 30);
+  }
+  function closeImportModal() { document.getElementById("importOverlay").classList.remove("open"); }
+
+  document.getElementById("openImportPlaylist").addEventListener("click", openImportModal);
+  document.getElementById("importCancel1").addEventListener("click", closeImportModal);
+  document.getElementById("importCancel2").addEventListener("click", closeImportModal);
+  document.getElementById("importOverlay").addEventListener("click", function (e) { if (e.target === this) this.classList.remove("open"); });
+  document.getElementById("importBack").addEventListener("click", function () {
+    document.getElementById("importStep1").style.display = "block";
+    document.getElementById("importStep2").style.display = "none";
+  });
+  document.getElementById("importSelectAll").addEventListener("click", function () {
+    document.querySelectorAll("#importList .imp-sel").forEach(function (cb) { cb.checked = true; });
+  });
+  document.getElementById("importSelectNone").addEventListener("click", function () {
+    document.querySelectorAll("#importList .imp-sel").forEach(function (cb) { cb.checked = false; });
+  });
+
+  document.getElementById("importFetchBtn").addEventListener("click", function () {
+    var playlistId = extractPlaylistId(document.getElementById("importUrl").value);
+    if (!playlistId) {
+      document.getElementById("importMsg").innerHTML = '<div class="form-msg err">That doesn\'t look like a playlist link or ID.</div>';
+      return;
+    }
+    if (!window.YOUTUBE_API_KEY || window.YOUTUBE_API_KEY.indexOf("REPLACE") === 0) {
+      document.getElementById("importMsg").innerHTML = '<div class="form-msg err">No YouTube API key configured. Fill in youtube-config.js — see README.md.</div>';
+      return;
+    }
+    var btn = document.getElementById("importFetchBtn");
+    btn.disabled = true;
+    document.getElementById("importMsg").innerHTML = '<div class="form-msg ok">Fetching playlist…</div>';
+    fetchPlaylistItems(playlistId, window.YOUTUBE_API_KEY).then(function (items) {
+      btn.disabled = false;
+      if (items.length === 0) {
+        document.getElementById("importMsg").innerHTML = '<div class="form-msg err">No videos found — is the playlist public or unlisted?</div>';
+        return;
+      }
+      document.getElementById("importMsg").innerHTML = "";
+      document.getElementById("importStep1").style.display = "none";
+      document.getElementById("importStep2").style.display = "block";
+      renderImportPreview(items);
+    }).catch(function (err) {
+      btn.disabled = false;
+      document.getElementById("importMsg").innerHTML = '<div class="form-msg err">' + (err && err.message ? err.message : "Couldn't fetch that playlist.") + '</div>';
+    });
+  });
+
+  document.getElementById("importConfirmBtn").addEventListener("click", function () {
+    if (!songsStore) return;
+    var rows = document.querySelectorAll("#importList .import-row");
+    var toAdd = [];
+    rows.forEach(function (row) {
+      if (!row.querySelector(".imp-sel").checked) return;
+      var artist = row.querySelector(".imp-artist").value.trim();
+      var title = row.querySelector(".imp-title").value.trim();
+      var link = row.getAttribute("data-link");
+      if (!artist || !title || !link) return;
+      toAdd.push({ artist: artist, title: title, youtubeLink: link, addedAt: Date.now() });
+    });
+    if (toAdd.length === 0) {
+      document.getElementById("importMsg").innerHTML = '<div class="form-msg err">Select at least one song, and make sure artist and title aren\'t empty.</div>';
+      return;
+    }
+    document.getElementById("importConfirmBtn").disabled = true;
+    document.getElementById("importMsg").innerHTML = '<div class="form-msg ok">Adding ' + toAdd.length + ' song' + (toAdd.length === 1 ? "" : "s") + '…</div>';
+    Promise.all(toAdd.map(function (song) { return songsStore.add(song); })).then(function () {
+      document.getElementById("importMsg").innerHTML = '<div class="form-msg ok">Added ' + toAdd.length + ' song' + (toAdd.length === 1 ? "" : "s") + ' to the allow list.</div>';
+      setTimeout(closeImportModal, 1200);
+    }).catch(function (err) {
+      document.getElementById("importMsg").innerHTML = '<div class="form-msg err">Something went wrong adding songs: ' + (err && err.message ? err.message : err) + '</div>';
+      document.getElementById("importConfirmBtn").disabled = false;
+    });
+  });
+
   /* ---------- boot ---------- */
   if (songsStore) songsStore.subscribe(function (arr) { songs = arr; renderAllowList(); }, "addedAt");
   if (queueStore) queueStore.subscribe(function (arr) { queue = arr; renderQueue(); }, "requestedAt");
   if (suggestionsStore) suggestionsStore.subscribe(function (arr) { suggestions = arr; renderSuggestions(); }, "submittedAt");
+  if (historyStore) historyStore.subscribe(function (arr) { history = arr; renderHistory(); }, "endedAt", "desc");
 })();
 </script>
 </body>
