@@ -14,4 +14,4 @@
      - API restrictions: restrict to "YouTube Data API v3" only
    This stops anyone else from copying the key and burning your quota.
    See README.md for more. */
-window.YOUTUBE_API_KEY = "REPLACE_WITH_YOUR_YOUTUBE_API_KEY";
+window.YOUTUBE_API_KEY = "AIzaSyAj77GGzZZNtkxuVJ0V_PccoIAyUAqgYHk";
